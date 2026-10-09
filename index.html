@@ -43,9 +43,9 @@ a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-
 
   <section class="panel">
     <strong>检测设置</strong>
-    <label for="threshold"><span>声音灵敏度</span><span id="thresholdVal">8</span></label>
-    <input id="threshold" type="range" min="2" max="30" value="8">
-    <p class="hint">如果环境噪音会触发计时，把数值调高；如果吹了却没开始，把数值调低。</p>
+    <label for="threshold"><span>声音触发阈值</span><span id="thresholdVal">12 dB</span></label>
+    <input id="threshold" type="range" min="4" max="24" value="12">
+    <p class="hint">数值表示声音要比刚测得的环境底噪高多少分贝。误触发时调高；吹奏没反应时调低。</p>
     <label for="silence"><span>结束判定（静音时长）</span><span id="silenceVal">0.8 秒</span></label>
     <input id="silence" type="range" min="4" max="20" value="8">
     <p class="hint">数值越大，越不容易因短暂音量下降而提前结束；但停吹后需要多等一会儿。</p>
@@ -64,8 +64,8 @@ a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-
 (() => {
   const $ = id => document.getElementById(id);
   let audioContext = null, stream = null, analyser = null, source = null, raf = 0;
-  let active = false, noteStart = 0, lastLoud = 0, startedAt = 0;
-  let samples = [], completed = [], lastFrame = 0;
+  let active = false, noteStart = 0, lastLoud = 0;
+  let completed = [], calibrationUntil = 0, noiseFloorDb = -60, noiseSamples = [], ready = false;
   let buffer = null;
   const startBtn = $('start'), stopBtn = $('stop');
 
@@ -115,8 +115,31 @@ a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-
     }
     const rms = Math.sqrt(sum/buffer.length);
     const db = rms > 0 ? 20*Math.log10(rms) : -100;
-    const thresholdDb = -60 + Number($('threshold').value); // sensitivity slider shifts gate
+
+    // Calibrate the room/microphone noise before allowing any note to start.
+    if (!ready) {
+      if (now < calibrationUntil) {
+        noiseSamples.push(db);
+        $('timer').textContent = '0.00';
+        $('state').textContent = '正在测量环境底噪，请暂时不要吹奏……';
+        raf = requestAnimationFrame(loop);
+        return;
+      }
+      if (noiseSamples.length) {
+        const sorted = noiseSamples.slice().sort((a,b)=>a-b);
+        noiseFloorDb = sorted[Math.floor(sorted.length * 0.6)] ?? -60;
+      }
+      ready = true;
+      $('state').textContent = '准备就绪，请吹奏一个长音';
+      setStatus('麦克风已开启，等待长笛声音', true);
+    }
+
+    // Slider represents how many dB above the measured room noise a sound must be.
+    // The absolute floor helps prevent very quiet electrical noise from triggering.
+    const thresholdDb = Math.max(noiseFloorDb + Number($('threshold').value), -52);
     const loud = db > thresholdDb;
+
+    let justFinished = false;
     if (loud) {
       lastLoud = now;
       if (!active) {
@@ -126,8 +149,11 @@ a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-
       }
     } else if (active && now-lastLoud > Number($('silence').value)*100) {
       finishNote(false);
+      justFinished = true;
+      $('state').textContent = '本次完成。准备好后继续吹下一次。';
     }
     if (active) $('timer').textContent = Math.max(0,(now-noteStart)/1000).toFixed(2);
+    else if (!justFinished) $('timer').textContent = '0.00';
     raf = requestAnimationFrame(loop);
   }
   async function start() {
@@ -143,9 +169,15 @@ a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-
       analyser.fftSize = 2048;
       source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);
+      active = false;
+      ready = false;
+      noiseSamples = [];
+      noiseFloorDb = -60;
+      calibrationUntil = performance.now() + 1500;
+      $('timer').textContent = '0.00';
       startBtn.disabled = true; stopBtn.disabled = false;
-      $('state').textContent = '现在吹一个长音；检测到声音后会自动开始。';
-      setStatus('麦克风已开启，正在监听', true);
+      $('state').textContent = '正在测量环境底噪，请暂时不要吹奏……';
+      setStatus('麦克风已开启，正在校准', true);
       raf = requestAnimationFrame(loop);
     } catch (e) {
       setError('无法开启麦克风：' + (e && e.message ? e.message : '请检查浏览器权限。'));
@@ -157,13 +189,14 @@ a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-
     if (stream) stream.getTracks().forEach(t=>t.stop());
     if (audioContext) audioContext.close();
     stream=null; audioContext=null; analyser=null; source=null;
+    ready = false;
     startBtn.disabled=false; stopBtn.disabled=true;
     setStatus('麦克风已关闭');
     $('state').textContent='点击“开启麦克风”继续练习';
   }
   startBtn.addEventListener('click', start);
   stopBtn.addEventListener('click', stop);
-  $('threshold').addEventListener('input', ()=>$('thresholdVal').textContent=$('threshold').value);
+  $('threshold').addEventListener('input', ()=>$('thresholdVal').textContent=$('threshold').value+' dB');
   $('silence').addEventListener('input', ()=>$('silenceVal').textContent=(Number($('silence').value)/10).toFixed(1)+' 秒');
   $('clear').addEventListener('click', () => {
     completed=[]; updateStats(); $('timer').textContent='0.00'; $('state').textContent='记录已清空。';
