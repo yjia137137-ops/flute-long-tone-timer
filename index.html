@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101114">
+<title>长笛长音计时器</title>
+<style>
+:root{color-scheme:dark;--bg:#101114;--panel:#1a1c21;--line:#30343c;--text:#f4f5f7;--muted:#a4aab4;--accent:#e8ad45;--green:#55d6a0}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:20px 16px calc(28px + env(safe-area-inset-bottom));}
+main{max-width:620px;margin:auto}h1{font-size:26px;margin:8px 0 4px}p{margin:6px 0;color:var(--muted)}.sub{font-size:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:16px}
+.status{display:flex;align-items:center;gap:9px;font-size:14px;color:var(--muted)}.dot{width:9px;height:9px;border-radius:50%;background:#7c828d}.dot.live{background:var(--green);box-shadow:0 0 0 4px #55d6a01a}
+.big{font-size:clamp(54px,15vw,78px);font-weight:700;letter-spacing:-2px;text-align:center;font-variant-numeric:tabular-nums;margin:18px 0 0}.unit{text-align:center;color:var(--muted);font-size:14px}.state{text-align:center;color:var(--accent);min-height:24px;margin-top:8px}
+.buttons{display:flex;gap:10px;margin-top:18px}.btn{flex:1;border:0;border-radius:13px;padding:14px 12px;font-size:16px;font-weight:650;cursor:pointer;background:var(--accent);color:#17130b}.btn.secondary{background:#2a2d34;color:var(--text);border:1px solid #3a3e47}.btn:disabled{opacity:.45}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}.stat{background:#131519;border-radius:12px;padding:12px 8px;text-align:center}.stat strong{display:block;font-size:21px;font-variant-numeric:tabular-nums}.stat span{font-size:12px;color:var(--muted)}
+label{display:flex;justify-content:space-between;gap:12px;font-size:14px;margin:16px 0 8px}input[type=range]{width:100%;accent-color:var(--accent)}.hint{font-size:13px;line-height:1.5;color:var(--muted)}
+table{width:100%;border-collapse:collapse;margin-top:10px;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:10px 4px;border-bottom:1px solid var(--line)}th{font-size:12px;color:var(--muted);font-weight:500}td:last-child,th:last-child{text-align:right}.empty{text-align:center;padding:18px 0;color:var(--muted);font-size:14px}
+a{color:var(--accent)}.error{color:#ff9e9e;font-size:14px;margin-top:10px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+  <h1>长笛长音计时器</h1>
+  <p class="sub">检测声音开始与结束，记录每次长音持续时间。</p>
+
+  <section class="panel">
+    <div class="status"><span class="dot" id="dot"></span><span id="status">尚未开启麦克风</span></div>
+    <div class="big" id="timer">0.00</div>
+    <div class="unit">秒</div>
+    <div class="state" id="state">点击“开启麦克风”，然后吹奏</div>
+    <div class="buttons">
+      <button class="btn" id="start">开启麦克风</button>
+      <button class="btn secondary" id="stop" disabled>停止 / 结束本次</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><strong id="best">—</strong><span>最佳（秒）</span></div>
+      <div class="stat"><strong id="avg">—</strong><span>平均（秒）</span></div>
+      <div class="stat"><strong id="count">0</strong><span>完成次数</span></div>
+    </div>
+    <div id="error" class="error" role="status"></div>
+  </section>
+
+  <section class="panel">
+    <strong>检测设置</strong>
+    <label for="threshold"><span>声音灵敏度</span><span id="thresholdVal">8</span></label>
+    <input id="threshold" type="range" min="2" max="30" value="8">
+    <p class="hint">如果环境噪音会触发计时，把数值调高；如果吹了却没开始，把数值调低。</p>
+    <label for="silence"><span>结束判定（静音时长）</span><span id="silenceVal">0.8 秒</span></label>
+    <input id="silence" type="range" min="4" max="20" value="8">
+    <p class="hint">数值越大，越不容易因短暂音量下降而提前结束；但停吹后需要多等一会儿。</p>
+  </section>
+
+  <section class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <strong>本次练习记录</strong><button class="btn secondary" id="clear" style="flex:0 0 auto;padding:9px 12px;font-size:13px">清空记录</button>
+    </div>
+    <div id="records" class="empty">完成第一次长音后，成绩会显示在这里。</div>
+  </section>
+  <p class="hint" style="margin-top:16px">隐私说明：此页面只在浏览器中分析实时音量，不录音、不上传音频。成绩暂存在当前页面内存中，刷新页面后会清空。</p>
+  <p class="hint">使用提示：手机请放在距离长笛约 30–60 cm 的位置；尽量在安静环境中测试。首次使用需要允许麦克风权限，并通过 HTTPS 网页打开此文件才能正常使用麦克风。</p>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let audioContext = null, stream = null, analyser = null, source = null, raf = 0;
+  let active = false, noteStart = 0, lastLoud = 0, startedAt = 0;
+  let samples = [], completed = [], lastFrame = 0;
+  let buffer = null;
+  const startBtn = $('start'), stopBtn = $('stop');
+
+  function setStatus(text, live=false) {
+    $('status').textContent = text;
+    $('dot').classList.toggle('live', live);
+  }
+  function setError(text='') { $('error').textContent = text; }
+  function updateStats() {
+    $('count').textContent = completed.length;
+    $('best').textContent = completed.length ? Math.max(...completed).toFixed(2) : '—';
+    $('avg').textContent = completed.length ? (completed.reduce((a,b)=>a+b,0)/completed.length).toFixed(2) : '—';
+    renderRecords();
+  }
+  function renderRecords() {
+    const box = $('records');
+    if (!completed.length) {
+      box.className = 'empty'; box.textContent = '完成第一次长音后，成绩会显示在这里。'; return;
+    }
+    box.className = '';
+    const rows = completed.slice().reverse().map((v,i) => `<tr><td>${completed.length-i}</td><td>${v.toFixed(2)} 秒</td><td>${v===Math.max(...completed)?'最佳':''}</td></tr>`).join('');
+    box.innerHTML = `<table><thead><tr><th>次数（最近在上）</th><th>持续时间</th><th>备注</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  function finishNote(manual=false) {
+    if (!active) return;
+    const end = manual ? performance.now() : lastLoud;
+    const duration = Math.max(0, (end-noteStart)/1000);
+    active = false;
+    if (duration >= 0.25) {
+      completed.push(duration);
+      $('timer').textContent = duration.toFixed(2);
+      $('state').textContent = '本次完成。准备好后继续吹下一次。';
+      updateStats();
+    } else {
+      $('timer').textContent = '0.00';
+      $('state').textContent = '声音太短，未记录；再试一次。';
+    }
+  }
+  function loop(now) {
+    if (!analyser) return;
+    if (!buffer || buffer.length !== analyser.fftSize) buffer = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(buffer);
+    let sum = 0;
+    for (let i=0;i<buffer.length;i++) {
+      const x = (buffer[i]-128)/128;
+      sum += x*x;
+    }
+    const rms = Math.sqrt(sum/buffer.length);
+    const db = rms > 0 ? 20*Math.log10(rms) : -100;
+    const thresholdDb = -60 + Number($('threshold').value); // sensitivity slider shifts gate
+    const loud = db > thresholdDb;
+    if (loud) {
+      lastLoud = now;
+      if (!active) {
+        active = true;
+        noteStart = now;
+        $('state').textContent = '正在计时：保持长音……';
+      }
+    } else if (active && now-lastLoud > Number($('silence').value)*100) {
+      finishNote(false);
+    }
+    if (active) $('timer').textContent = Math.max(0,(now-noteStart)/1000).toFixed(2);
+    raf = requestAnimationFrame(loop);
+  }
+  async function start() {
+    setError('');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('此打开方式不支持麦克风。请将网页部署到 HTTPS 地址后，用 Safari 打开。'); return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      await audioContext.resume();
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      startBtn.disabled = true; stopBtn.disabled = false;
+      $('state').textContent = '现在吹一个长音；检测到声音后会自动开始。';
+      setStatus('麦克风已开启，正在监听', true);
+      raf = requestAnimationFrame(loop);
+    } catch (e) {
+      setError('无法开启麦克风：' + (e && e.message ? e.message : '请检查浏览器权限。'));
+    }
+  }
+  function stop() {
+    if (active) finishNote(true);
+    cancelAnimationFrame(raf);
+    if (stream) stream.getTracks().forEach(t=>t.stop());
+    if (audioContext) audioContext.close();
+    stream=null; audioContext=null; analyser=null; source=null;
+    startBtn.disabled=false; stopBtn.disabled=true;
+    setStatus('麦克风已关闭');
+    $('state').textContent='点击“开启麦克风”继续练习';
+  }
+  startBtn.addEventListener('click', start);
+  stopBtn.addEventListener('click', stop);
+  $('threshold').addEventListener('input', ()=>$('thresholdVal').textContent=$('threshold').value);
+  $('silence').addEventListener('input', ()=>$('silenceVal').textContent=(Number($('silence').value)/10).toFixed(1)+' 秒');
+  $('clear').addEventListener('click', () => {
+    completed=[]; updateStats(); $('timer').textContent='0.00'; $('state').textContent='记录已清空。';
+  });
+  $('silenceVal').textContent=(Number($('silence').value)/10).toFixed(1)+' 秒';
+})();
+</script>
+</body>
+</html>
